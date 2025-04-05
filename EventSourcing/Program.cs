@@ -150,10 +150,12 @@ List<string> streamNames = ["api/user/addUser", "api/user/deleteUser"];
 List<SuccessRequestEvent> successRequestEvents = [];
 List<UnSuccessRequestEvent> unSuccessRequestEvents = [];
 
-// Channel oluştur
-var channel = Channel.CreateUnbounded<object>();
 
-// Her stream için abonelik başlat
+var channel = Channel.CreateBounded<object>(new BoundedChannelOptions(100) { FullMode = BoundedChannelFullMode.DropOldest }, (item) => Console.WriteLine(item));
+
+var writer = channel.Writer;
+var reader = channel.Reader;
+
 foreach (var item in streamNames)
 {
     await eventStore.SubscribeToStreamAsync(
@@ -164,50 +166,34 @@ foreach (var item in streamNames)
             string eventType = resolvedEvent.Event.EventType;
             var type = Type.GetType(eventType);
             object @event = JsonSerializer.Deserialize(resolvedEvent.Event.Data.ToArray(), type)!;
-            await channel.Writer.WriteAsync(@event);
+            await writer.WriteAsync(@event);
         }
     );
 }
 
-var readerTask = Task.Run(async () =>
+var readerTask2 = await Task.Factory.StartNew(async () =>
 {
-    int successRequestEventCount = 0;
-    int unSuccessRequestEventCount = 0;
-
-    await foreach (var e in channel.Reader.ReadAllAsync())
+    Thread.Sleep(100);
+    while (reader.Count != 0)
     {
-        switch (e)
+        var response = await reader.ReadAsync();
+        switch (response)
         {
             case SuccessRequestEvent sr:
                 successRequestEvents.Add(sr);
-                successRequestEventCount++;
                 break;
             case UnSuccessRequestEvent usr:
                 unSuccessRequestEvents.Add(usr);
-                unSuccessRequestEventCount++;
-                break;
-
-        }
-
-        if (successRequestEventCount != 1 && unSuccessRequestEventCount != 1)
-        {
-            if (successRequestEventCount == successRequestEvents.Count)
-                break;
-
-            if (unSuccessRequestEventCount == unSuccessRequestEvents.Count)
                 break;
         }
-
-
     }
-    channel.Writer.Complete();
 
 });
 
-// Event'leri bekle
-await readerTask;
 
-// Event'leri sırala ve yazdır
+
+await readerTask2;
+
 if (successRequestEvents.Any())
 {
     var highLastSuccessRequestEvent = successRequestEvents.OrderBy(y => y.RequestTime).Last();
@@ -222,10 +208,10 @@ if (unSuccessRequestEvents.Any())
 
 
 
+Console.Read();
+
 #endregion
 
-
-Console.Read();
 
 
 
