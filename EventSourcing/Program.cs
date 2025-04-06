@@ -1,9 +1,72 @@
 ﻿// See https://aka.ms/new-console-template for more information
 using EventStore.Client;
+using System.Collections.Concurrent;
 using System.Text.Json;
-using System.Threading.Channels;
 
 
+ConcurrentDictionary<string, TimeSpan> lastPrintedSuccessEventTimes = new ConcurrentDictionary<string, TimeSpan>();
+ConcurrentDictionary<string, TimeSpan> lastPrintedUnsuccessEventTimes = new ConcurrentDictionary<string, TimeSpan>();
+
+// Event listeleri
+List<SuccessRequestEvent> successRequestEvents = [];
+List<UnSuccessRequestEvent> unSuccessRequestEvents = [];
+
+void ProcessEvent(object @event)
+{
+    switch (@event)
+    {
+        case SuccessRequestEvent sr:
+            ProcessSuccessEvent(sr);
+            break;
+        case UnSuccessRequestEvent usr:
+            ProcessUnsuccessEvent(usr);
+            break;
+    }
+}
+
+void ProcessSuccessEvent(SuccessRequestEvent sr)
+{
+    successRequestEvents.Add(sr);
+
+    if (successRequestEvents.Count > 1)
+    {
+        var lastEvent = successRequestEvents.OrderBy(y => y.RequestTime).Last();
+        string eventKey = lastEvent.RequestUrl;
+
+        if (!lastPrintedSuccessEventTimes.TryGetValue(eventKey, out TimeSpan lastTime) ||
+            lastEvent.RequestTime > lastTime)
+        {
+            Console.WriteLine($"Istek suresinde bir artış gözlendi {lastEvent.GetType().Name} " +
+                lastEvent.RequestTime + " " + lastEvent.RequestUrl);
+
+            lastPrintedSuccessEventTimes[eventKey] = lastEvent.RequestTime;
+        }
+    }
+}
+
+
+void ProcessUnsuccessEvent(UnSuccessRequestEvent usr)
+{
+    // Olayı listeye ekle
+    unSuccessRequestEvents.Add(usr);
+
+    if (unSuccessRequestEvents.Count > 1)
+    {
+        var lastEvent = unSuccessRequestEvents.OrderBy(y => y.RequestTime).Last();
+        string eventKey = lastEvent.RequestUrl;
+
+        // Bu URL için son yazdırılan zamanı kontrol et
+        if (!lastPrintedUnsuccessEventTimes.TryGetValue(eventKey, out TimeSpan lastTime) ||
+            lastEvent.RequestTime > lastTime)
+        {
+            Console.WriteLine($"Istek suresinde bir artış gözlendi {lastEvent.GetType().Name} " +
+                lastEvent.RequestTime + " " + lastEvent.RequestUrl);
+
+            // Son yazdırılan zamanı güncelle
+            lastPrintedUnsuccessEventTimes[eventKey] = lastEvent.RequestTime;
+        }
+    }
+}
 
 var eventStoreClientSettings = EventStoreClientSettings.Create("esdb://admin:changeit@localhost:2113?tls=false&tlsVerifyCert=false");
 EventStoreClient eventStore = new EventStoreClient(eventStoreClientSettings);
@@ -146,65 +209,24 @@ EventStoreClient eventStore = new EventStoreClient(eventStoreClientSettings);
 //    );
 List<string> streamNames = ["api/user/addUser", "api/user/deleteUser"];
 
-// Event listeleri
-List<SuccessRequestEvent> successRequestEvents = [];
-List<UnSuccessRequestEvent> unSuccessRequestEvents = [];
 
-
-var channel = Channel.CreateBounded<object>(new BoundedChannelOptions(100) { FullMode = BoundedChannelFullMode.DropOldest }, (item) => Console.WriteLine(item));
-
-var writer = channel.Writer;
-var reader = channel.Reader;
-
-foreach (var item in streamNames)
+foreach (var streamName in streamNames)
 {
-    await eventStore.SubscribeToStreamAsync(
-        streamName: item,
+    await eventStore.SubscribeToStreamAsync(streamName: streamName,
         start: FromStream.Start,
         eventAppeared: async (streamSubscription, resolvedEvent, cancellationToken) =>
         {
             string eventType = resolvedEvent.Event.EventType;
-            var type = Type.GetType(eventType);
+            var type = Type.GetType(eventType)!;
             object @event = JsonSerializer.Deserialize(resolvedEvent.Event.Data.ToArray(), type)!;
-            await writer.WriteAsync(@event);
-        }
-    );
+
+            ProcessEvent(@event);
+
+
+        });
 }
 
-var readerTask2 = await Task.Factory.StartNew(async () =>
-{
-    Thread.Sleep(100);
-    while (reader.Count != 0)
-    {
-        var response = await reader.ReadAsync();
-        switch (response)
-        {
-            case SuccessRequestEvent sr:
-                successRequestEvents.Add(sr);
-                break;
-            case UnSuccessRequestEvent usr:
-                unSuccessRequestEvents.Add(usr);
-                break;
-        }
-    }
 
-});
-
-
-
-await readerTask2;
-
-if (successRequestEvents.Any())
-{
-    var highLastSuccessRequestEvent = successRequestEvents.OrderBy(y => y.RequestTime).Last();
-    Console.WriteLine($"Istek suresinde bir artış gözlendi {highLastSuccessRequestEvent.GetType().Name} " + highLastSuccessRequestEvent.RequestTime + " " + highLastSuccessRequestEvent.RequestUrl);
-}
-
-if (unSuccessRequestEvents.Any())
-{
-    var highLastInSuccessRequestEvents = unSuccessRequestEvents.OrderBy(y => y.RequestTime).Last();
-    Console.WriteLine($"Istek suresinde bir artış gözlendi {highLastInSuccessRequestEvents.GetType().Name} " + highLastInSuccessRequestEvents.RequestTime + " " + highLastInSuccessRequestEvents.RequestUrl);
-}
 
 
 
