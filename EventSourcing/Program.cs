@@ -7,66 +7,7 @@ using System.Text.Json;
 ConcurrentDictionary<string, TimeSpan> lastPrintedSuccessEventTimes = new ConcurrentDictionary<string, TimeSpan>();
 ConcurrentDictionary<string, TimeSpan> lastPrintedUnsuccessEventTimes = new ConcurrentDictionary<string, TimeSpan>();
 
-// Event listeleri
-List<SuccessRequestEvent> successRequestEvents = [];
-List<UnSuccessRequestEvent> unSuccessRequestEvents = [];
 
-void ProcessEvent(object @event)
-{
-    switch (@event)
-    {
-        case SuccessRequestEvent sr:
-            ProcessSuccessEvent(sr);
-            break;
-        case UnSuccessRequestEvent usr:
-            ProcessUnsuccessEvent(usr);
-            break;
-    }
-}
-
-void ProcessSuccessEvent(SuccessRequestEvent sr)
-{
-    successRequestEvents.Add(sr);
-
-    if (successRequestEvents.Count > 1)
-    {
-        var lastEvent = successRequestEvents.OrderBy(y => y.RequestTime).Last();
-        string eventKey = lastEvent.RequestUrl;
-
-        if (!lastPrintedSuccessEventTimes.TryGetValue(eventKey, out TimeSpan lastTime) ||
-            lastEvent.RequestTime > lastTime)
-        {
-            Console.WriteLine($"Istek suresinde bir artış gözlendi {lastEvent.GetType().Name} " +
-                lastEvent.RequestTime + " " + lastEvent.RequestUrl);
-
-            lastPrintedSuccessEventTimes[eventKey] = lastEvent.RequestTime;
-        }
-    }
-}
-
-
-void ProcessUnsuccessEvent(UnSuccessRequestEvent usr)
-{
-    // Olayı listeye ekle
-    unSuccessRequestEvents.Add(usr);
-
-    if (unSuccessRequestEvents.Count > 1)
-    {
-        var lastEvent = unSuccessRequestEvents.OrderBy(y => y.RequestTime).Last();
-        string eventKey = lastEvent.RequestUrl;
-
-        // Bu URL için son yazdırılan zamanı kontrol et
-        if (!lastPrintedUnsuccessEventTimes.TryGetValue(eventKey, out TimeSpan lastTime) ||
-            lastEvent.RequestTime > lastTime)
-        {
-            Console.WriteLine($"Istek suresinde bir artış gözlendi {lastEvent.GetType().Name} " +
-                lastEvent.RequestTime + " " + lastEvent.RequestUrl);
-
-            // Son yazdırılan zamanı güncelle
-            lastPrintedUnsuccessEventTimes[eventKey] = lastEvent.RequestTime;
-        }
-    }
-}
 
 var eventStoreClientSettings = EventStoreClientSettings.Create("esdb://admin:changeit@localhost:2113?tls=false&tlsVerifyCert=false");
 EventStoreClient eventStore = new EventStoreClient(eventStoreClientSettings);
@@ -220,13 +161,44 @@ foreach (var streamName in streamNames)
             var type = Type.GetType(eventType)!;
             object @event = JsonSerializer.Deserialize(resolvedEvent.Event.Data.ToArray(), type)!;
 
-            ProcessEvent(@event);
+            switch (@event)
+            {
+                case SuccessRequestEvent successRequestEvent:
+                    lastPrintedSuccessEventTimes.AddOrUpdate(
+                        successRequestEvent.RequestUrl,
+                        successRequestEvent.RequestTime,
+                        (key, oldValue) =>
+                        {
+                            if (successRequestEvent.RequestTime > oldValue)
+                            {
+                                Console.WriteLine($"Istek suresinde bir artış gözlendi {successRequestEvent.GetType().Name} " +
+                                                  successRequestEvent.RequestTime + " " + successRequestEvent.RequestUrl);
+                                return successRequestEvent.RequestTime;
+                            }
+                            return oldValue;
+                        });
+                    break;
+
+                case UnSuccessRequestEvent unSuccessRequestEvent:
+                    lastPrintedUnsuccessEventTimes.AddOrUpdate(
+                        unSuccessRequestEvent.RequestUrl,
+                        unSuccessRequestEvent.RequestTime,
+                        (key, oldValue) =>
+                        {
+                            if (unSuccessRequestEvent.RequestTime > oldValue)
+                            {
+                                Console.WriteLine($"Istek suresinde bir artış gözlendi {unSuccessRequestEvent.GetType().Name} " +
+                                                  unSuccessRequestEvent.RequestTime + " " + unSuccessRequestEvent.RequestUrl);
+                                return unSuccessRequestEvent.RequestTime;
+                            }
+                            return oldValue;
+                        });
+                    break;
+            }
 
 
         });
 }
-
-
 
 
 
