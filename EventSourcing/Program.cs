@@ -7,7 +7,7 @@ using System.Text.Json;
 ConcurrentDictionary<string, TimeSpan> lastPrintedSuccessEventTimes = new ConcurrentDictionary<string, TimeSpan>();
 ConcurrentDictionary<string, TimeSpan> lastPrintedUnsuccessEventTimes = new ConcurrentDictionary<string, TimeSpan>();
 
-
+Lock _lock = new Lock();
 
 var eventStoreClientSettings = EventStoreClientSettings.Create("esdb://admin:changeit@localhost:2113?tls=false&tlsVerifyCert=false");
 EventStoreClient eventStore = new EventStoreClient(eventStoreClientSettings);
@@ -148,56 +148,107 @@ EventStoreClient eventStore = new EventStoreClient(eventStoreClientSettings);
 //    expectedState: StreamState.Any,
 //    eventData: [eventData4]
 //    );
+
+List<SuccessRequestEvent> successRequests = [];
+List<UnSuccessRequestEvent> unSuccessRequestEvents = [];
 List<string> streamNames = ["api/user/addUser", "api/user/deleteUser"];
+
+
+//foreach (var streamName in streamNames)
+//{
+//    await eventStore.SubscribeToStreamAsync(streamName: streamName,
+//        start: FromStream.Start,
+//        eventAppeared: async (streamSubscription, resolvedEvent, cancellationToken) =>
+//        {
+//            string eventType = resolvedEvent.Event.EventType;
+//            var type = Type.GetType(eventType)!;
+//            object @event = JsonSerializer.Deserialize(resolvedEvent.Event.Data.ToArray(), type)!;
+
+//            switch (@event)
+//            {
+//                case SuccessRequestEvent successRequestEvent:
+//                    lastPrintedSuccessEventTimes.AddOrUpdate(
+//                        successRequestEvent.RequestUrl,
+//                        successRequestEvent.RequestTime,
+//                        (key, oldValue) =>
+//                        {
+//                            if (successRequestEvent.RequestTime > oldValue)
+//                            {
+//                                Console.WriteLine($"Istek suresinde bir artış gözlendi {successRequestEvent.GetType().Name} " +
+//                                                  successRequestEvent.RequestTime + " " + successRequestEvent.RequestUrl);
+//                                return successRequestEvent.RequestTime;
+//                            }
+//                            return oldValue;
+//                        });
+//                    break;
+
+//                case UnSuccessRequestEvent unSuccessRequestEvent:
+//                    lastPrintedUnsuccessEventTimes.AddOrUpdate(
+//                        unSuccessRequestEvent.RequestUrl,
+//                        unSuccessRequestEvent.RequestTime,
+//                        (key, oldValue) =>
+//                        {
+//                            if (unSuccessRequestEvent.RequestTime > oldValue)
+//                            {
+//                                Console.WriteLine($"Istek suresinde bir artış gözlendi {unSuccessRequestEvent.GetType().Name} " +
+//                                                  unSuccessRequestEvent.RequestTime + " " + unSuccessRequestEvent.RequestUrl);
+//                                return unSuccessRequestEvent.RequestTime;
+//                            }
+//                            return oldValue;
+//                        });
+//                    break;
+//            }
+//        });
+//}
+
 
 
 foreach (var streamName in streamNames)
 {
     await eventStore.SubscribeToStreamAsync(streamName: streamName,
-        start: FromStream.Start,
-        eventAppeared: async (streamSubscription, resolvedEvent, cancellationToken) =>
-        {
-            string eventType = resolvedEvent.Event.EventType;
-            var type = Type.GetType(eventType)!;
-            object @event = JsonSerializer.Deserialize(resolvedEvent.Event.Data.ToArray(), type)!;
+    start: FromStream.Start,
+    eventAppeared: async (streamSubscription, resolvedEvent, cancellationToken) =>
+    {
+        string eventType = resolvedEvent.Event.EventType;
+        var type = Type.GetType(eventType)!;
+        object @event = JsonSerializer.Deserialize(resolvedEvent.Event.Data.ToArray(), type)!;
 
+
+        _lock.Enter();
+
+        try
+        {
             switch (@event)
             {
                 case SuccessRequestEvent successRequestEvent:
-                    lastPrintedSuccessEventTimes.AddOrUpdate(
-                        successRequestEvent.RequestUrl,
-                        successRequestEvent.RequestTime,
-                        (key, oldValue) =>
-                        {
-                            if (successRequestEvent.RequestTime > oldValue)
-                            {
-                                Console.WriteLine($"Istek suresinde bir artış gözlendi {successRequestEvent.GetType().Name} " +
-                                                  successRequestEvent.RequestTime + " " + successRequestEvent.RequestUrl);
-                                return successRequestEvent.RequestTime;
-                            }
-                            return oldValue;
-                        });
-                    break;
+                    successRequests.Add(successRequestEvent);
+                    if (successRequests.Count > 1)
+                    {
+                        var lastSuccessRequest = successRequests.OrderBy(y => y.RequestTime).Last();
 
+                        Console.WriteLine("Zaman aşımına uğrayan istek: " + lastSuccessRequest.RequestUrl + " " + lastSuccessRequest.RequestTime);
+                    }
+                    break;
                 case UnSuccessRequestEvent unSuccessRequestEvent:
-                    lastPrintedUnsuccessEventTimes.AddOrUpdate(
-                        unSuccessRequestEvent.RequestUrl,
-                        unSuccessRequestEvent.RequestTime,
-                        (key, oldValue) =>
-                        {
-                            if (unSuccessRequestEvent.RequestTime > oldValue)
-                            {
-                                Console.WriteLine($"Istek suresinde bir artış gözlendi {unSuccessRequestEvent.GetType().Name} " +
-                                                  unSuccessRequestEvent.RequestTime + " " + unSuccessRequestEvent.RequestUrl);
-                                return unSuccessRequestEvent.RequestTime;
-                            }
-                            return oldValue;
-                        });
+                    unSuccessRequestEvents.Add(unSuccessRequestEvent);
+                    if (unSuccessRequestEvents.Count > 1)
+                    {
+                        var lastUnSuccessRequest = unSuccessRequestEvents.OrderBy(y => y.RequestTime).Last();
+
+                        Console.WriteLine("Zaman aşımına uğrayan istek: " + lastUnSuccessRequest.RequestUrl + " " + lastUnSuccessRequest.RequestTime);
+                    }
                     break;
             }
 
+        }
+        finally
+        {
+            _lock.Exit();
+        }
 
-        });
+
+
+    });
 }
 
 
